@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upcoming Bus Times</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/protobufjs/6.11.3/protobuf.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Tiny5&display=swap" rel="stylesheet">    
+  
+  <style>
+  body {
+      font-family: 'Tiny5', serif;
+      background-color: #111; /* Dark background */
+      color: #eee; /* Light text for contrast */
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    h1 {
+      font-size: rem;
+      margin-bottom: 20px;
+      color: #eee;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      text-align: center;
+    }
+    .matrix-display {
+      background-color: #222; /* Slightly lighter than the background */
+      padding: 20px;
+      border: 2px solid #333;
+      border-radius: 8px;
+      display: inline-block;
+      width: 80%;
+      max-width: 600px;
+      text-align: center;
+      box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.8);
+    }
+    ul {
+      list-style-type: none;
+      padding: 0;
+      margin: 0;
+    }
+    li {
+      font-size: 1.25rem;
+      letter-spacing: 1px;
+      line-height: 1.8rem;
+      background-color: #333;
+      color: #0f0; /* Classic green LED color */
+      margin: 5px 0;
+      padding: 10px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    li span {
+      font-size: 1rem;
+      color: #aaa; /* Subtle gray for supplementary info */
+    }
+    .error {
+      color: #f55; /* Subtle red for errors */
+    }
+  </style>
+</head>
+<body>
+  <h1>Upcoming busses</h1>
+  <div id="content" class="matrix-display">Loading bus times...</div>
+  <script>
+    const GTFS_RT_URL = "https://corsproxy.io/?url=https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey=OIaylUM6KhrxYkCUySLJ";
+    const TARGET_STOP_ID = "11040";
+    const CONTENT_DIV = document.getElementById("content");
+
+    const fetchGTFSRTData = async (url) => {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        return new Uint8Array(arrayBuffer);
+      } catch (error) {
+        console.error("Failed to fetch GTFS-RT data:", error);
+        CONTENT_DIV.innerHTML = `<p class="error">Failed to load bus data: ${error.message}</p>`;
+      }
+    };
+
+    const parseGTFSRTData = async (data) => {
+      try {
+        const root = await protobuf.load("gtfs-realtime.proto");
+        const FeedMessage = root.lookupType("transit_realtime.FeedMessage");
+        const message = FeedMessage.decode(data);
+        return FeedMessage.toObject(message, { longs: String });
+      } catch (error) {
+        console.error("Failed to parse GTFS-RT data:", error);
+        CONTENT_DIV.innerHTML = `<p class="error">Failed to parse bus data: ${error.message}</p>`;
+      }
+    };
+
+    const filterAndSortBusTimesForStop = (parsedData, stopId) => {
+      const upcomingBuses = [];
+
+      if (!parsedData || !parsedData.entity) return upcomingBuses;
+
+      for (const entity of parsedData.entity) {
+        if (!entity.tripUpdate || !entity.tripUpdate.stopTimeUpdate) continue;
+
+        for (const stopTimeUpdate of entity.tripUpdate.stopTimeUpdate) {
+          if (stopTimeUpdate.stopId === stopId) {
+            upcomingBuses.push({
+              tripId: entity.tripUpdate.trip.tripId,
+              routeId: entity.tripUpdate.trip.routeId,
+              arrivalTime: stopTimeUpdate.arrival?.time,
+              delay: stopTimeUpdate.departure?.delay || 0,
+            });
+          }
+        }
+      }
+
+      // Sort buses by arrival time
+      return upcomingBuses.sort((a, b) => a.arrivalTime - b.arrivalTime);
+    };
+
+    const displayUpcomingBuses = (buses) => {
+      if (buses.length === 0) {
+        CONTENT_DIV.innerHTML = `<p class="error">No upcoming buses for Stop ID: ${TARGET_STOP_ID}.</p>`;
+        return;
+      }
+
+      const currentTime = Math.floor(Date.now() / 1000); // Current time in seconds since epoch
+
+      const busesHTML = buses
+        .map((bus) => {
+          const arrivalTime = new Date(bus.arrivalTime * 1000).toLocaleTimeString();
+          const minutesAway = Math.ceil((bus.arrivalTime - currentTime) / 60);
+
+          return `
+            <li>
+              Route ${bus.routeId} - ${arrivalTime} <span>(${minutesAway} mins away, Delayed ${bus.delay} minutes)</span>
+            </li>
+          `;
+        })
+        .join("");
+
+      CONTENT_DIV.innerHTML = `<ul>${busesHTML}</ul>`;
+    };
+
+    const fetchAndDisplayBusTimes = async () => {
+      const rawData = await fetchGTFSRTData(GTFS_RT_URL);
+      if (rawData) {
+        const parsedData = await parseGTFSRTData(rawData);
+        if (parsedData) {
+          const buses = filterAndSortBusTimesForStop(parsedData, TARGET_STOP_ID);
+          displayUpcomingBuses(buses);
+        }
+      }
+    };
+
+    // Fetch and display data every 15 seconds
+    fetchAndDisplayBusTimes(); // Initial call
+    setInterval(fetchAndDisplayBusTimes, 15000); // Refresh every 15 seconds
+  </script>
+</body>
+</html>
